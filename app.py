@@ -1,49 +1,54 @@
+import random
+
 import streamlit as st
-import pandas as pd
-import numpy as np
-from PIL import Image
 import xgboost as xgb
-import pickle
-from rec_sys import load_test_dataset
 
-st.set_page_config(page_title="Santander Recommendation", page_icon="🏦", layout="centered")
-header = st.container()
-
-pickled_model = pickle.load(open('xgb_model.pkl', 'rb'))
-
-with header:
-    image = Image.open('santander-banner.png')
-    st.image(image, caption='Santander Banking')
-    st.header("Santander Recommendation System")
-    
-    st.markdown('''
-    Na Figura abaixo é ilustrado o diagrama de um dos processos de aprendizado de máquina utilizados para este trabalho que é modelo criado a partir do XGBoost. Como é visto na figura, a primeira etapa é a separação dos dados em dados de produtos adquiridos pelo cliente no mês e os dados do cliente propriamente dito. Esse processo de categorização é grande importância visto que as características do cliente é essencial para a recomendação.. 
-    
-                    ''')
-
-    image = Image.open('diagrama_xgboost.png')
-    st.image(image, caption='Model Architecture')
+from rec_sys import PROJECT_DIR, load_model, load_test_dataset, recommend
 
 
-df_test, df_products, label_encoder = load_test_dataset()
-X_test = df_test.sample(1)
+@st.cache_resource
+def load_artifacts():
+    customers, _, encoder = load_test_dataset()
+    return customers, encoder, load_model()
 
-st.markdown("Aperte no botão abaixo para selecionar um novo usuário do banco")
 
-if st.button("Novo Usuário"):
-    X_test = df_test.sample(1)
+def main():
+    st.set_page_config(page_title="Recomendação Santander", page_icon="🏦")
+    st.image(str(PROJECT_DIR / "santander-banner.png"))
+    st.title("Recomendação de produtos Santander")
+    st.write("O XGBoost usa o perfil do cliente e sua carteira anterior para ordenar até sete produtos.")
+    st.image(str(PROJECT_DIR / "diagrama_xgboost.png"), caption="Fluxo do modelo XGBoost")
 
-st.dataframe(X_test.T, use_container_width=True)
+    try:
+        customers, encoder, model = load_artifacts()
+    except FileNotFoundError as error:
+        st.info(f"Para habilitar a previsão, adicione {error.filename} conforme o README.")
+        return
+    except (ValueError, KeyError, xgb.core.XGBoostError) as error:
+        st.error(f"Falha ao carregar os artefatos: {error}")
+        return
 
-if st.button('Realizar Previsão'):
-    final_test = xgb.DMatrix(X_test)
-    preds = pickled_model.predict(final_test)
-    top_t_products = [
-        label_encoder.inverse_transform(
-            np.argsort(pred, axis=0)[::-1][:7]
-        ) for pred in preds
-    ]
-    st.write("Recomendações:")
-    st.write(list(top_t_products))
-    # for i, product in enumerate(top_t_products):
-    #     st.markdown(product)
+    if "customer_row" not in st.session_state:
+        st.session_state.customer_row = random.randrange(len(customers))
+    if st.button("Novo usuário") and len(customers) > 1:
+        offset = random.randrange(1, len(customers))
+        st.session_state.customer_row = (st.session_state.customer_row + offset) % len(customers)
+    customer = customers.iloc[[st.session_state.customer_row]]
+    st.dataframe(customer.T)
+
+    if st.button("Realizar previsão"):
+        try:
+            products = recommend(model, customer, encoder)
+        except (ValueError, xgb.core.XGBoostError) as error:
+            st.error(f"Falha na previsão: {error}")
+            return
+        if products:
+            st.subheader("Produtos recomendados")
+            for position, product in enumerate(products, start=1):
+                st.text(f"{position}. {product}")
+        else:
+            st.info("O cliente já possui todos os produtos do catálogo.")
+
+
+if __name__ == "__main__":
+    main()
